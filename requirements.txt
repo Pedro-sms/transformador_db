@@ -1,0 +1,8 @@
+streamlit==1.28.0
+fdb==2.0.4
+psycopg2-binary==2.9.7
+pandas==2.0.3
+sqlalchemy==2.0.20
+python-decouple==3.8
+python-dateutil==2.8.2
+tqdm==4.66.1
