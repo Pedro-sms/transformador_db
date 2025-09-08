@@ -1,21 +1,31 @@
 import re
 import logging
 from typing import List, Tuple, Dict, Any
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 # Função para converter nomes para snake_case
 def to_snake_case(name: str) -> str:
+    """Converte nomes para snake_case preservando acrônimos curtos"""
     if name.isupper() and len(name) <= 5:
         return name.lower()
+    
+    # Inserir underscores antes de letras maiúsculas
     name = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name)
     name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1_\2', name)
+    
+    # Converter para minúsculo
     name = name.lower()
+    
+    # Substituir caracteres especiais por underscore
     name = re.sub(r'[^a-z0-9_]', '_', name)
+    
+    # Remover underscores múltiplos
     name = re.sub(r'_+', '_', name)
+    
+    # Remover underscores no início e fim
     return name.strip('_')
-
 
 class SQLConverter:
     def __init__(self):
@@ -32,10 +42,12 @@ class SQLConverter:
             'true', 'false', 'and', 'or', 'not', 'is', 'as', 'table', 'column',
             'constraint', 'primary', 'foreign', 'key', 'references', 'check',
             'unique', 'index', 'create', 'drop', 'alter', 'insert', 'update',
-            'delete', 'grant', 'revoke', 'commit', 'rollback', 'transaction'
+            'delete', 'grant', 'revoke', 'commit', 'rollback', 'transaction',
+            'schema', 'view', 'function', 'procedure', 'trigger', 'sequence'
         }
 
     def _init_rules(self) -> List[Tuple[str, str, str]]:
+        """Define regras de conversão do Firebird para PostgreSQL"""
         return [
             # Tipos de dados básicos
             (r'\bBLOB\s+SUB_TYPE\s+TEXT\b', 'TEXT', 'BLOB TEXT → TEXT'),
@@ -73,9 +85,9 @@ class SQLConverter:
             (r'\b\'TODAY\'\b', 'CURRENT_DATE', 'TODAY → CURRENT_DATE'),
             
             # Generators/Sequences
-            (r'\bCREATE\s+GENERATOR\s+(\w+)\s*;', r'CREATE SEQUENCE \1;', 'GENERATOR → SEQUENCE'),
-            (r'\bSET\s+GENERATOR\s+(\w+)\s+TO\s+(\d+)\s*;', r"SELECT setval('\1', \2);", 'SET GENERATOR → setval'),
-            (r'\bGEN_ID\s*\(\s*(\w+)\s*,\s*(\d+)\s*\)', r"nextval('\1')", 'GEN_ID → nextval'),
+            (r'\bCREATE\s+GENERATOR\s+(\w+)\s*;', r'CREATE SEQUENCE "\1";', 'GENERATOR → SEQUENCE'),
+            (r'\bSET\s+GENERATOR\s+(\w+)\s+TO\s+(\d+)\s*;', r"SELECT setval('\"\1\"', \2);", 'SET GENERATOR → setval'),
+            (r'\bGEN_ID\s*\(\s*(\w+)\s*,\s*(\d+)\s*\)', r"nextval('\"\1\"')", 'GEN_ID → nextval'),
             
             # Funções específicas do Firebird
             (r'\bCAST\s*\(\s*(.+?)\s+AS\s+(\w+(?:\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\))?)\s*\)', 
@@ -97,7 +109,6 @@ class SQLConverter:
             (r'\bCOMPUTED\s+BY\s*\([^)]+\)', '', 'Remove COMPUTED BY'),
             (r'\bSET\s+TERM\s+[^;]+;', '', 'Remove SET TERM'),
             (r'\bCOMMIT\s+WORK\s*;', '', 'Remove COMMIT WORK'),
-            (r'\bCOMMIT\s*;', '', 'Remove COMMIT'),
             (r'\bSET\s+AUTODDL\s+(ON|OFF)\s*;', '', 'Remove SET AUTODDL'),
             (r'\bSET\s+NAMES\s+\w+\s*;', '', 'Remove SET NAMES'),
             
@@ -111,15 +122,15 @@ class SQLConverter:
             (r'\bSUSPEND\s*;', 'RETURN NEXT;', 'SUSPEND → RETURN NEXT'),
             (r'\bEXIT\s*;', 'RETURN;', 'EXIT → RETURN'),
             
-            # Comentários
-            (r'/\*.*?\*/', '', 'Remove comentários de bloco'),
-            (r'--.*', '', 'Remove comentários de linha'),
+            # Limpeza de comentários preservando estrutura SQL
+            (r'--.*$', '', 'Remove comentários de linha'),
             
             # Limpeza
             (r'\bWITH\s+CHECK\s+OPTION\b', '', 'Remove WITH CHECK OPTION'),
         ]
 
     def convert_sql_script(self, sql_content: str) -> Tuple[str, Dict[str, Any]]:
+        """Converte script SQL do Firebird para PostgreSQL"""
         stats = {
             'total_lines': sql_content.count('\n') + 1,
             'converted_lines': 0,
@@ -137,7 +148,12 @@ class SQLConverter:
         }
 
         try:
+            logger.info("Iniciando conversão SQL")
+            
+            # Pré-processamento
             sql_content = self._pre_process(sql_content)
+            
+            # Aplicar regras de conversão
             sql_content = self._handle_domains(sql_content, stats)
             sql_content = self._apply_rules(sql_content, stats)
             sql_content = self._convert_identifiers(sql_content)
@@ -147,14 +163,21 @@ class SQLConverter:
             sql_content = self._convert_views(sql_content, stats)
             sql_content = self._convert_indexes(sql_content, stats)
             sql_content = self._fix_data_types(sql_content, stats)
+            
+            # Pós-processamento
             sql_content = self._post_process_sql(sql_content, stats)
+            
+            logger.info("Conversão SQL concluída com sucesso")
             return sql_content, stats
+            
         except Exception as e:
-            stats['errors'].append(str(e))
-            logger.error("Erro na conversão", exc_info=True)
+            error_msg = f"Erro na conversão SQL: {str(e)}"
+            stats['errors'].append(error_msg)
+            logger.error(error_msg, exc_info=True)
             return sql_content, stats
 
     def _pre_process(self, sql: str) -> str:
+        """Pré-processamento do SQL"""
         # Normalizar quebras de linha
         sql = re.sub(r'\r\n', '\n', sql)
         sql = re.sub(r'\r', '\n', sql)
@@ -242,7 +265,10 @@ class SQLConverter:
             domain_def = match.group(2).strip()
             
             # Extrair o tipo base
-            type_match = re.search(r'(VARCHAR\s*\(\s*\d+\s*\)|CHAR\s*\(\s*\d+\s*\)|INTEGER|SMALLINT|BIGINT|NUMERIC\s*\(\s*\d+\s*,\s*\d+\s*\)|DATE|TIME|TIMESTAMP|BLOB)', domain_def, re.IGNORECASE)
+            type_match = re.search(
+                r'(VARCHAR\s*\(\s*\d+\s*\)|CHAR\s*\(\s*\d+\s*\)|INTEGER|SMALLINT|BIGINT|NUMERIC\s*\(\s*\d+\s*,\s*\d+\s*\)|DATE|TIME|TIMESTAMP|BLOB)', 
+                domain_def, re.IGNORECASE
+            )
             
             if type_match:
                 base_type = type_match.group(1)
@@ -260,6 +286,7 @@ class SQLConverter:
         return sql
 
     def _apply_rules(self, sql: str, stats: Dict[str, Any]) -> str:
+        """Aplica regras de conversão definidas"""
         original_line_count = sql.count('\n')
         
         for pattern, replacement, desc in self.rules:
@@ -273,6 +300,7 @@ class SQLConverter:
         return sql
 
     def _convert_identifiers(self, sql: str) -> str:
+        """Converte identificadores para padrão PostgreSQL"""
         # Divide para não alterar strings literais
         parts = re.split(r"('.*?'|\".*?\")", sql, flags=re.DOTALL)
         
@@ -289,11 +317,17 @@ class SQLConverter:
                 words = re.findall(r'\b\w+\b', parts[i])
                 for word in words:
                     if word.lower() in self.postgres_keywords:
-                        parts[i] = re.sub(rf'\b{re.escape(word)}\b', f'"{word.lower()}"', parts[i], flags=re.IGNORECASE)
+                        parts[i] = re.sub(
+                            rf'\b{re.escape(word)}\b', 
+                            f'"{word.lower()}"', 
+                            parts[i], 
+                            flags=re.IGNORECASE
+                        )
         
         return ''.join(parts)
 
     def _convert_triggers(self, sql: str, stats: Dict[str, Any]) -> str:
+        """Converte triggers do Firebird para PostgreSQL"""
         pattern = re.compile(
             r'CREATE\s+(OR\s+ALTER\s+)?TRIGGER\s+(\w+)\s+(ACTIVE|INACTIVE)?\s*(BEFORE|AFTER)\s+(INSERT|UPDATE|DELETE|OR)+.*?AS\s*(DECLARE.*?)?(BEGIN.*?END)(?:\s*\^)?',
             flags=re.IGNORECASE | re.DOTALL
@@ -320,10 +354,10 @@ class SQLConverter:
 -- TRIGGER {trigger_name} - CONVERTED (requires manual review)
 -- Original Firebird trigger converted to PostgreSQL
 CREATE OR REPLACE FUNCTION {trigger_name.lower()}_func() 
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER AS $
 {declarations}
 {body}
-$$ LANGUAGE plpgsql;
+$ LANGUAGE plpgsql;
 
 -- Note: Verify table name and adjust timing/events as needed
 -- CREATE TRIGGER {trigger_name.lower()} {timing} {events} ON your_table_name
@@ -334,6 +368,7 @@ $$ LANGUAGE plpgsql;
         return pattern.sub(replace_trigger, sql)
 
     def _convert_procedures(self, sql: str, stats: Dict[str, Any]) -> str:
+        """Converte stored procedures do Firebird para PostgreSQL"""
         pattern = re.compile(
             r'CREATE\s+(OR\s+ALTER\s+)?PROCEDURE\s+(\w+)\s*(\([^)]*\))?\s*(RETURNS\s*\([^)]*\))?\s*AS\s*(DECLARE.*?)?(BEGIN.*?END)(?:\s*\^)?',
             flags=re.IGNORECASE | re.DOTALL
@@ -363,17 +398,17 @@ $$ LANGUAGE plpgsql;
             converted = f"""
 -- PROCEDURE {proc_name} - CONVERTED (requires manual review)
 CREATE OR REPLACE FUNCTION {proc_name.lower()}{params} 
-{returns} AS $$
+{returns} AS $
 {declarations}
 {body}
-$$ LANGUAGE plpgsql;
+$ LANGUAGE plpgsql;
 """
             return converted
         
         return pattern.sub(replace_procedure, sql)
 
     def _convert_functions(self, sql: str, stats: Dict[str, Any]) -> str:
-        # Similar ao procedures, mas para UDFs
+        """Converte UDFs externas do Firebird"""
         pattern = re.compile(
             r'DECLARE\s+EXTERNAL\s+FUNCTION\s+(\w+).*?;',
             flags=re.IGNORECASE | re.DOTALL
@@ -388,7 +423,7 @@ $$ LANGUAGE plpgsql;
         return pattern.sub(replace_udf, sql)
 
     def _convert_views(self, sql: str, stats: Dict[str, Any]) -> str:
-        # Views geralmente funcionam, mas podem precisar de ajustes
+        """Conta e registra views convertidas"""
         pattern = re.compile(r'CREATE\s+(OR\s+ALTER\s+)?VIEW\s+(\w+)', flags=re.IGNORECASE)
         
         def count_view(match):
@@ -398,8 +433,11 @@ $$ LANGUAGE plpgsql;
         return pattern.sub(count_view, sql)
 
     def _convert_indexes(self, sql: str, stats: Dict[str, Any]) -> str:
-        # Converter índices compostos e especiais
-        pattern = re.compile(r'CREATE\s+(UNIQUE\s+)?(?:ASC|DESC)?\s*INDEX\s+(\w+)\s+ON\s+(\w+)\s*\(([^)]+)\)(?:\s*COMPUTED\s+BY\s*\([^)]+\))?', flags=re.IGNORECASE)
+        """Converte índices do Firebird para PostgreSQL"""
+        pattern = re.compile(
+            r'CREATE\s+(UNIQUE\s+)?(?:ASC|DESC)?\s*INDEX\s+(\w+)\s+ON\s+(\w+)\s*\(([^)]+)\)(?:\s*COMPUTED\s+BY\s*\([^)]+\))?', 
+            flags=re.IGNORECASE
+        )
         
         def replace_index(match):
             unique = match.group(1) or ''
@@ -410,14 +448,12 @@ $$ LANGUAGE plpgsql;
             stats['converted_objects']['indexes'] += 1
             
             # Remover COMPUTED BY se existir
-            return f"CREATE {unique}INDEX {index_name} ON {table_name} ({columns});"
+            return f'CREATE {unique}INDEX "{index_name.lower()}" ON "{table_name.lower()}" ({columns});'
         
         return pattern.sub(replace_index, sql)
 
     def _fix_data_types(self, sql: str, stats: Dict[str, Any]) -> str:
         """Correções adicionais de tipos de dados"""
-        
-        # Corrigir tipos específicos que podem ter passado
         fixes = [
             (r'\bD_FLOAT\b', 'DOUBLE PRECISION'),
             (r'\bQUAD\b', 'BIGINT'),
@@ -431,6 +467,7 @@ $$ LANGUAGE plpgsql;
         return sql
 
     def _post_process_sql(self, sql: str, stats: Dict[str, Any]) -> str:
+        """Pós-processamento do SQL"""
         # Remover múltiplas linhas em branco
         sql = re.sub(r'\n\s*\n\s*\n+', '\n\n', sql)
         
@@ -466,5 +503,3 @@ SET row_security = off;
         stats['converted_objects']['sequences'] = len(re.findall(r'CREATE\s+SEQUENCE', sql_content, re.IGNORECASE))
         
         return sql_content
-
-from datetime import datetime
