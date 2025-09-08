@@ -2,6 +2,8 @@ import fdb
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+import datetime
+import decimal
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +388,7 @@ class FirebirdClient:
     def get_table_data_batch(self, table_name: str, offset: int, limit: int) -> List[Dict]:
         """
         Obtém um lote de dados de uma tabela usando sintaxe correta do Firebird
+        Com tratamento melhor de tipos de dados
         """
         cursor = self.connection.cursor()
         
@@ -400,13 +403,31 @@ class FirebirdClient:
             columns = [desc[0].strip() for desc in cursor.description]
             data = cursor.fetchall()
             
-            # Converter para lista de dicionários
+            # Converter para lista de dicionários com tratamento de tipos
             result = []
             for row in data:
                 row_dict = {}
                 for i, value in enumerate(row):
                     if i < len(columns):
-                        row_dict[columns[i]] = value
+                        # Tratamento específico para diferentes tipos
+                        if value is not None:
+                            if isinstance(value, (bytes, bytearray)):
+                                # Manter bytes como bytes para posterior conversão
+                                row_dict[columns[i]] = value
+                            elif isinstance(value, str):
+                                # Limpar strings de caracteres de controle problemáticos
+                                cleaned_value = value.replace('\x00', '').strip()
+                                row_dict[columns[i]] = cleaned_value
+                            elif isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+                                # Manter objetos datetime como estão
+                                row_dict[columns[i]] = value
+                            elif isinstance(value, decimal.Decimal):
+                                # Manter decimais como estão
+                                row_dict[columns[i]] = value
+                            else:
+                                row_dict[columns[i]] = value
+                        else:
+                            row_dict[columns[i]] = None
                 result.append(row_dict)
             
             return result
@@ -441,7 +462,7 @@ class FirebirdClient:
                 FROM RDB$RELATIONS 
                 WHERE RDB$VIEW_BLR IS NULL 
                 AND (RDB$SYSTEM_FLAG IS NULL OR RDB$SYSTEM_FLAG = 0)
-                AND RDB$RELATION_NAME NOT STARTING WITH 'RDB
+                AND RDB$RELATION_NAME NOT STARTING WITH 'RDB$'
             """)
             table_count = cursor.fetchone()[0] or 0
             
@@ -450,7 +471,7 @@ class FirebirdClient:
                 FROM RDB$RELATIONS 
                 WHERE RDB$VIEW_BLR IS NOT NULL 
                 AND (RDB$SYSTEM_FLAG IS NULL OR RDB$SYSTEM_FLAG = 0)
-                AND RDB$RELATION_NAME NOT STARTING WITH 'RDB
+                AND RDB$RELATION_NAME NOT STARTING WITH 'RDB$'
             """)
             view_count = cursor.fetchone()[0] or 0
             
@@ -458,7 +479,7 @@ class FirebirdClient:
                 SELECT COUNT(*) 
                 FROM RDB$GENERATORS 
                 WHERE (RDB$SYSTEM_FLAG IS NULL OR RDB$SYSTEM_FLAG = 0)
-                AND RDB$GENERATOR_NAME NOT STARTING WITH 'RDB
+                AND RDB$GENERATOR_NAME NOT STARTING WITH 'RDB$'
             """)
             generator_count = cursor.fetchone()[0] or 0
             
