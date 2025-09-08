@@ -9,9 +9,9 @@ from data_migrator import DataMigrator
 logger = logging.getLogger(__name__)
 
 class SQLGenerator:
-    def __init__(self, db_path: str, batch_size: int = 10000, include_data: bool = True):
+    def __init__(self, db_path: str, batch_size: int = 1000, include_data: bool = True):
         self.db_path = db_path
-        self.batch_size = batch_size
+        self.batch_size = batch_size  # Reduzido para debug
         self.include_data = include_data
         self.firebird_client = FirebirdClient(db_path)
         self.schema_converter = SchemaConverter()
@@ -74,6 +74,7 @@ class SQLGenerator:
                 try:
                     count = self.firebird_client.get_table_count(table)
                     total_rows += count
+                    logger.info(f"Tabela {table}: {count:,} registros")
                 except Exception as e:
                     logger.warning(f"Erro ao contar registros da tabela {table}: {str(e)}")
             
@@ -85,30 +86,35 @@ class SQLGenerator:
             # 1. Gerar sequences (generators)
             if generators:
                 sequences_sql, sequences_stats = self._generate_sequences_sql(generators)
-                components.extend(sequences_sql)
+                if sequences_sql:
+                    components.extend(sequences_sql)
                 self._update_stats(sequences_stats)
             
             # 2. Gerar schema das tabelas
             schema_sql, schema_stats = self._generate_schema_sql(tables)
-            components.extend(schema_sql)
+            if schema_sql:
+                components.extend(schema_sql)
             self._update_stats(schema_stats)
             
             # 3. Gerar views
             if views:
                 views_sql, views_stats = self._generate_views_sql(views)
-                components.extend(views_sql)
+                if views_sql:
+                    components.extend(views_sql)
                 self._update_stats(views_stats)
             
-            # 4. Gerar constraints (chaves estrangeiras, índices)
-            constraints_sql, constraints_stats = self._generate_constraints_sql(tables)
-            components.extend(constraints_sql)
-            self._update_stats(constraints_stats)
-            
-            # 5. Gerar dados se solicitado
+            # 4. Gerar dados se solicitado
             if self.include_data and not self.stats['errors']:
                 data_sql, data_stats = self._generate_data_sql(tables)
-                components.extend(data_sql)
+                if data_sql:
+                    components.extend(data_sql)
                 self._update_stats(data_stats)
+            
+            # 5. Gerar constraints após os dados para evitar problemas
+            constraints_sql, constraints_stats = self._generate_constraints_sql(tables)
+            if constraints_sql:
+                components.extend(constraints_sql)
+            self._update_stats(constraints_stats)
             
             # Combinar todos os componentes
             complete_sql = self._combine_sql_components(components)
@@ -141,11 +147,11 @@ class SQLGenerator:
         
         try:
             sequence_statements = self.schema_converter.generate_sequences(generators)
-            sequences_sql.extend(sequence_statements)
-            sequences_sql.append("")  # Linha em branco
-            
-            stats['processed_sequences'] = len(generators)
-            logger.info(f"Processadas {len(generators)} sequences")
+            if sequence_statements:
+                sequences_sql.extend(sequence_statements)
+                sequences_sql.append("")  # Linha em branco
+                stats['processed_sequences'] = len(generators)
+                logger.info(f"Processadas {len(generators)} sequences")
             
         except Exception as e:
             error_msg = f"Erro ao processar sequences: {str(e)}"
@@ -156,7 +162,7 @@ class SQLGenerator:
     
     def _generate_schema_sql(self, tables: List[str]) -> Tuple[List[str], Dict[str, Any]]:
         """Gera SQL para criação das tabelas (estrutura básica sem constraints)"""
-        schema_sql = ["-- TABLES SCHEMA (structure without constraints)\n"]
+        schema_sql = ["-- TABLES SCHEMA (structure without foreign keys)\n"]
         stats = {
             'processed_tables_schema': 0,
             'errors': [],
@@ -229,7 +235,7 @@ class SQLGenerator:
         return views_sql, stats
     
     def _generate_constraints_sql(self, tables: List[str]) -> Tuple[List[str], Dict[str, Any]]:
-        """Gera SQL para constraints (PKs, FKs, índices)"""
+        """Gera SQL para constraints (índices, FKs) - executado APÓS inserção dos dados"""
         constraints_sql = ["\n-- CONSTRAINTS AND INDEXES\n"]
         stats = {
             'processed_constraints': 0,
@@ -280,16 +286,17 @@ class SQLGenerator:
                         table, 
                         table_schema.row_count, 
                         table_schema,
-                        use_copy=table_schema.row_count > 1000,
+                        use_copy=False,  # Sempre usar INSERT para debug
                         use_transactions=False  # Transações serão controladas no nível superior
                     )
                     
-                    data_sql.append(table_data_sql)
-                    
-                    stats['processed_rows'] += table_schema.row_count
-                    stats['processed_tables_data'] += 1
-                    
-                    logger.info(f"Tabela {table}: {table_schema.row_count:,} registros processados")
+                    if table_data_sql.strip():
+                        data_sql.append(table_data_sql)
+                        
+                        stats['processed_rows'] += table_schema.row_count
+                        stats['processed_tables_data'] += 1
+                        
+                        logger.info(f"Tabela {table}: {table_schema.row_count:,} registros processados")
                 else:
                     data_sql.append(f"-- Tabela {table} está vazia")
                     data_sql.append("")
@@ -327,7 +334,12 @@ class SQLGenerator:
         sorted_tables = []
         remaining_tables = set(tables)
         
-        while remaining_tables:
+        max_iterations = len(tables) * 2  # Prevenir loop infinito
+        iteration = 0
+        
+        while remaining_tables and iteration < max_iterations:
+            iteration += 1
+            
             # Encontrar tabelas sem dependências restantes
             ready_tables = []
             for table in remaining_tables:
@@ -381,7 +393,7 @@ SET row_security = off;
 SET default_tablespace = '';
 SET default_table_access_method = heap;
 
--- Disable triggers during data load (re-enabled automatically at end)
+-- Disable foreign key checks during migration
 SET session_replication_role = replica;
 
 """
@@ -391,7 +403,7 @@ SET session_replication_role = replica;
         
         # Rodapé
         footer = f"""
--- Re-enable triggers
+-- Re-enable foreign key checks
 SET session_replication_role = DEFAULT;
 
 -- Migration Statistics:
