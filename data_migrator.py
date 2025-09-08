@@ -63,7 +63,7 @@ class DataMigrator:
             escaped = escaped.replace('\t', '\\t')    # Escape tab
             
             # Para strings com caracteres especiais, use E-string notation
-            if any(char in escaped for char in ['\\n', '\\t', '\\\\']) or ord(min(escaped, default='\x00')) < 32:
+            if any(char in escaped for char in ['\\n', '\\t', '\\\\']) or any(ord(c) < 32 for c in escaped if c):
                 return f"E'{escaped}'"
             return f"'{escaped}'"
         
@@ -102,7 +102,7 @@ class DataMigrator:
                 return f"'{value.strftime('%H:%M:%S.%f')}'"
             return f"'{value.strftime('%H:%M:%S')}'"
         
-        elif isinstance(value, bytes):
+        elif isinstance(value, (bytes, bytearray)):
             # Formato bytea hex para PostgreSQL (mais eficiente que escape)
             hex_value = value.hex()
             return f"'\\x{hex_value}'"
@@ -179,11 +179,10 @@ class DataMigrator:
                 
                 values_lines.append(f"({', '.join(values)})")
             
-            # Construir INSERT com ON CONFLICT para robustez
+            # Construir INSERT simples sem ON CONFLICT para debug
             insert_sql = f"""INSERT INTO {table_name_formatted} ({', '.join(formatted_columns)}) 
 VALUES 
-  {',\n  '.join(values_lines)}
-ON CONFLICT DO NOTHING;"""
+  {',\n  '.join(values_lines)};"""
             
             insert_statements.append(insert_sql)
         
@@ -237,7 +236,7 @@ ON CONFLICT DO NOTHING;"""
                         escaped = escaped.replace('\n', '\\n')  # Escape newlines
                         escaped = escaped.replace('\r', '\\r')  # Escape carriage returns
                         csv_values.append(f'"{escaped}"')
-                elif isinstance(value, bytes):
+                elif isinstance(value, (bytes, bytearray)):
                     # Bytea em formato hex
                     hex_value = value.hex()
                     csv_values.append(f'"\\x{hex_value}"')
@@ -318,10 +317,11 @@ ON CONFLICT DO NOTHING;"""
 
     def migrate_table_data(self, table_name: str, total_rows: int, 
                           table_schema: Any = None, 
-                          use_copy: bool = True,
+                          use_copy: bool = False,
                           use_transactions: bool = True) -> str:
         """
         Migra dados de tabela com opções flexíveis
+        CORRIGIDO: Forçar uso de INSERT ao invés de COPY para debug
         """
         if total_rows == 0:
             return f"-- Tabela {table_name} está vazia\n"
@@ -335,8 +335,8 @@ ON CONFLICT DO NOTHING;"""
         if use_transactions:
             sql_output.append("BEGIN;")
         
-        # Desabilitar triggers para performance (se existirem)
-        sql_output.append(f"ALTER TABLE {table_name_formatted} DISABLE TRIGGER ALL;")
+        # Não desabilitar triggers para debug - pode estar causando problemas
+        # sql_output.append(f"ALTER TABLE {table_name_formatted} DISABLE TRIGGER ALL;")
         
         try:
             processed_rows = 0
@@ -361,11 +361,8 @@ ON CONFLICT DO NOTHING;"""
                         if len(warnings) > 5:
                             sql_output.append(f"-- ... e mais {len(warnings) - 5} avisos")
                 
-                # Gerar SQL para inserção
-                if use_copy and current_batch_size > 100:
-                    insert_sql = self.generate_copy_statements(table_name, batch, table_schema)
-                else:
-                    insert_sql = self.generate_insert_statements(table_name, batch, table_schema)
+                # SEMPRE usar INSERT para garantir compatibilidade
+                insert_sql = self.generate_insert_statements(table_name, batch, table_schema)
                 
                 sql_output.append(f"-- Lote {batch_count}: registros {offset + 1} a {offset + current_batch_size}")
                 sql_output.append(insert_sql)
@@ -382,8 +379,8 @@ ON CONFLICT DO NOTHING;"""
             raise
         
         finally:
-            # Reabilitar triggers
-            sql_output.append(f"ALTER TABLE {table_name_formatted} ENABLE TRIGGER ALL;")
+            # Não reabilitar triggers se não foram desabilitados
+            pass
         
         if use_transactions:
             sql_output.append("COMMIT;")
