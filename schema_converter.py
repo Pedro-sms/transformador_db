@@ -219,17 +219,14 @@ class SchemaConverter:
         unique_indexes = [idx for idx in table_schema.indexes 
                          if idx.get('unique') and idx.get('name') and
                          not (table_schema.primary_key and 
-                              set([idx.get('field', '')]) == set(table_schema.primary_key))]
+                              set(idx.get('fields', [])) == set(table_schema.primary_key))]
         
         for index in unique_indexes:
             index_name = f'"{index["name"].lower()}"'
-            if isinstance(index.get('fields'), list):
-                fields = ', '.join([f'"{field.lower()}"' for field in index['fields']])
-            else:
-                field_name = index.get('field', index.get('fields', ''))
-                fields = f'"{field_name.lower()}"'
-            
-            constraints.append(f"CREATE UNIQUE INDEX {index_name} ON {table_name} ({fields});")
+            fields = index.get('fields', [])
+            if fields:
+                formatted_fields = ', '.join([f'"{field.lower()}"' for field in fields])
+                constraints.append(f"CREATE UNIQUE INDEX {index_name} ON {table_name} ({formatted_fields});")
         
         # Índices não-únicos
         regular_indexes = [idx for idx in table_schema.indexes 
@@ -237,16 +234,16 @@ class SchemaConverter:
         
         for index in regular_indexes:
             index_name = f'"{index["name"].lower()}"'
-            if isinstance(index.get('fields'), list):
-                fields = ', '.join([f'"{field.lower()}"' for field in index['fields']])
-            else:
-                field_name = index.get('field', index.get('fields', ''))
-                fields = f'"{field_name.lower()}"'
-            
-            constraints.append(f"CREATE INDEX {index_name} ON {table_name} ({fields});")
+            fields = index.get('fields', [])
+            if fields:
+                formatted_fields = ', '.join([f'"{field.lower()}"' for field in fields])
+                constraints.append(f"CREATE INDEX {index_name} ON {table_name} ({formatted_fields});")
         
         # Chaves estrangeiras
         for fk in table_schema.foreign_keys:
+            if not all([fk.get('name'), fk.get('source_field'), fk.get('target_table'), fk.get('target_field')]):
+                continue
+                
             fk_name = f'"{fk["name"].lower()}"'
             source_field = f'"{fk["source_field"].lower()}"'
             target_table = f'"{fk["target_table"].lower()}"'
